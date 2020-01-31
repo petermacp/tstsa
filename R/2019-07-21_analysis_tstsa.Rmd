@@ -1,0 +1,841 @@
+---
+title: "Tuberculin skin test reactivity in TB household contacts"
+
+subtitle: "Statistical analysis"
+
+author: |
+  | Peter MacPherson
+  |
+  | Liverpool School of Tropical Medicine, Liverpool, UK
+  | Malawi-Liverpool-Wellcome Clinical Research Programme, Blantyre, Malawi
+  |
+
+date: | 
+  | `r format(Sys.time(), "%B %d, %Y")`
+  |
+  | Table of Contents:
+output: 
+  html_document:
+    theme: cosmo
+    highlight: espresso
+    toc: true
+---
+
+<br>
+
+## 1. Backgound
+
+This is a statistical analysis of the prevalence of TST reactivity among household contacts of index TB cases in the HomeACF Study, a cluster randomised trial done in two provinces of South Africa.
+
+This documents reports revised analysis following reviewer's comments received on 17th December 2019.
+
+<br>
+
+## 2. Set-up
+
+Load all required packages for analysis.
+
+```{r setup, echo=FALSE, include=FALSE, message=FALSE, comment=NA, warning=FALSE}
+library(tidyverse)    #for data manipulation
+library(pmthemes)     #for ggplot themes
+library(knitr)        #for tables
+library(arsenal)      #for summary table
+library(brms)         #for regression modelling
+library(tidybayes)    #for processing bayesian estimates
+library(Hmisc)        #for multiple imputation
+library(gt)           #for tables
+library(janitor)      #for cleaning
+library(cowplot)      #for combining graphs
+library(patchwork)    #for combining graphs
+library(here)         #for file system organisation
+
+```
+
+<br>
+
+## 3. Import datasets
+
+Import data required for the analysis.
+
+```{r import}
+data("index2", package = "tstsa")
+data("tstsa", package = "tstsa")
+
+```
+
+<br>
+
+Now do some tidying up of data.
+
+Here we do multiple imputation using a flexible additive regression model with bootstrapping.
+
+```{r}
+mdata <- tstsa %>%
+  dplyr::select(record_id, contact_id, tstdiam_h,
+                sex_h, ageyears_h, hivfinal_h,timespent_h,
+                sharebedroom_h, site, ageyears_i, sex_i,
+                smoke_i, hiv_i, microconf_i, num_contacts, 
+                smoke_h, totalrooms_h, windows_h) %>%
+  mutate(hiv_i = case_when(hiv_i=="c) HIV-unknown" ~ NA_character_,
+                           TRUE ~ hiv_i)) %>%
+  mutate(hivfinal_h = case_when(hivfinal_h=="c) HIV unknown" ~ NA_character_,
+                                TRUE ~ hivfinal_h))
+
+imp1 <- aregImpute(formula = ~ sex_h + ageyears_h + hivfinal_h +timespent_h +
+                sharebedroom_h + site + ageyears_i + sex_i +
+                smoke_i + hiv_i + microconf_i + num_contacts + totalrooms_h + windows_h,
+                data = mdata, n.impute=5, burnin = 3, nk=3, type="pmm", 
+                pmmtype = 1)
+imp1
+
+mdata_imp <- as.data.frame(impute.transcan(imp1, imputation=1, data=mdata, list.out=TRUE, pr=FALSE, check=FALSE))
+
+mdata_imp %>% janitor::tabyl(hiv_i)
+mdata_imp %>% janitor::tabyl(hivfinal_h)
+mdata_imp %>% janitor::tabyl(timespent_h)
+
+mdata_imp <- mdata %>%
+  dplyr::select(record_id, contact_id, tstdiam_h,smoke_h) %>%
+  bind_cols(mdata_imp)
+
+mdata_imp <- mdata_imp %>%
+  ungroup() %>%
+  haven::zap_labels()
+
+mdata_imp <- mdata_imp %>%
+  mutate(hivfinal_h = as.factor(as.vector(hivfinal_h)),
+         timespent_h = as.factor(as.vector(timespent_h)),
+         hiv_i = as.factor(as.vector(hiv_i)),
+         record_id = as.character(record_id),
+         contact_id = as.character(contact_id),
+         totalrooms_h = as.numeric(totalrooms_h))
+glimpse(mdata_imp)
+
+```
+
+<br>
+
+## 4. Baseline characteristics by site.
+
+Make a table of baseline characteristics by study site.
+
+First individual-level characteristics.
+
+```{r}
+glimpse(tstsa)
+
+table1a <- tableby(site ~ sex_i + ageyears_i + bmi_i +
+                     dead_i + xpert_i + smear_i + culture_i +
+                     microconf_i + smoke_i + hiv_i + 
+                     coughdays_i,
+                   data = index2, test=TRUE,
+                   numeric.stats=c("medianq1q3"), digits=3)
+
+summary(table1a)
+
+```
+
+Now the household contact characteristics
+
+```{r}
+
+table1b <- tableby(site ~ sex_h + ageyears_h +
+                     airspace_h + timespent_h + sleepsamebed_h + sharebedroom_h +
+                     smoke_h + 
+                     hivfinal_h,
+                   data=tstsa, test=TRUE,
+                   numeric.stats=c("medianrange"), digits=1)
+
+summary(table1b)
+
+```
+
+<br>
+
+Now the dwelling characteristics
+
+```{r}
+
+glimpse(tstsa)
+
+dwellings <- tstsa %>%
+  select(record_id, site, num_contacts, totalrooms_h, windows_h,
+         numsmokers_h) %>%
+  distinct()
+
+
+table1c <- tableby(site ~ num_contacts + totalrooms_h + windows_h + numsmokers_h,
+                   data=dwellings, test=TRUE,
+                   numeric.stats=c("medianrange"), digits=1)
+
+summary(table1c)
+
+```
+
+<br>
+
+Number of contacts per index case
+
+```{r}
+tstsa %>% 
+  group_by(record_id, site) %>%
+  count() %>%
+  group_by(n, site) %>%
+  summarise(contacts = sum(n)) %>%
+  ggplot() +
+  geom_bar(aes(x=n, y=contacts, fill=site), stat="identity") +
+  facet_wrap(~site) +
+  theme_bw(base_family = "Oswald") +
+  theme(legend.position = "none") +
+  labs(x="Number of household contacts per index case",
+       y = "N")
+  
+
+```
+
+<br>
+
+## 5. Characteristics of tuberculin skin tests among household contacts
+
+Graph by age-group of proportion with TST >=5 mm, stratified by key characteristics
+
+```{r}
+
+agegps <- mdata_imp %>%
+  mutate(agegroup_h = case_when(ageyears_h <5 ~ "0-4",
+                                ageyears_h >=5 & ageyears_h <10 ~ "05-09",
+                                ageyears_h >=10 & ageyears_h <15 ~ "10-14",
+                                ageyears_h >=15 & ageyears_h <25 ~ "15-24",
+                                ageyears_h >=25 & ageyears_h <35 ~ "25-34",
+                                ageyears_h >=35 & ageyears_h <45 ~ "35-44",
+                                ageyears_h >=45 & ageyears_h <55 ~ "45-54",
+                                ageyears_h >=55 ~ "55+"),
+                                ordered=TRUE) %>%
+  mutate(tst_5mm = case_when(tstdiam_h<5 ~ 0,
+                             tstdiam_h>=5 ~ 1)) %>%
+  mutate(tst_10mm = case_when(tstdiam_h<10 ~ 0,
+                              tstdiam_h>=10 ~ 1))
+
+agegps %>%
+janitor::tabyl(agegroup_h, site) %>%
+  adorn_totals("col") %>%
+  adorn_percentages("col") %>%
+  adorn_pct_formatting() %>%
+  adorn_ns()
+  
+  
+
+#How many underwent TST testing
+agegps %>%
+  janitor::tabyl(tst_5mm) %>%
+  gt()
+
+agegps %>%
+  janitor::tabyl(tst_10mm) %>%
+  gt()
+
+```
+
+<br>
+
+Look at the bins of TST diameter
+
+```{r}
+
+tstsa %>%
+  group_by(tstdiam_h, site) %>%
+  summarise(n= n()) %>%
+  mutate(prop = n/sum(n)) %>%
+  filter(!is.na(tstdiam_h)) %>%
+  ggplot() +
+  geom_bar(aes(x=tstdiam_h, y=n), stat = "identity") +
+  theme_light() +
+  facet_grid(site~.) +
+  scale_y_continuous() +
+  labs(title="Tuberculin skin test reactivity in household contacts",
+       x = "Diameter (mm)",
+       y = "Percent")
+
+
+```
+
+<br>
+
+Proportions of household contacts with TST induration >=5mm
+
+```{r}
+
+#Get the prevalence with TST induration >=5mm overall
+g0 <- agegps %>%
+  group_by(agegroup_h, tst_5mm) %>%
+  summarise(n=n()) %>%
+  mutate(sum = sum(n)) %>%
+  filter(tst_5mm==1) %>%
+  rowwise %>%
+  mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
+  tidyr::unnest(xx)
+
+g0 
+
+#plot
+g0 %>%
+  ggplot() +
+  geom_bar(aes(x=agegroup_h, y=estimate), fill = "firebrick", stat = "identity") +
+  geom_errorbar(aes(x=agegroup_h, ymin=conf.low, ymax = conf.high), width = 0.2) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family="Oswald") +
+  labs(y="",
+       x="") +
+  theme(legend.position = "none") + 
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+#Get the propotion with TST induraction >=5mm by site
+g0_b <- agegps %>%
+  group_by(agegroup_h, tst_5mm, site) %>%
+  summarise(n=n()) %>%
+  mutate(sum = sum(n)) %>%
+  filter(tst_5mm==1) %>%
+  rowwise %>%
+  mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
+  tidyr::unnest(xx)
+
+g0_b
+
+#plot the proportion with TST induration >=5mm by site
+g0_b %>%
+  ggplot() +
+  geom_bar(aes(x=agegroup_h, y=estimate, fill = site), stat = "identity") +
+  geom_errorbar(aes(x=agegroup_h, ymin=conf.low, ymax = conf.high), width = 0.2) +
+  facet_wrap(site~.) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family="Oswald") +
+  labs(y="",
+       x="") +
+  theme(legend.position = "none") + 
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+
+```
+
+<br>
+
+
+Graph with two cut-offs for TST diameter
+
+```{r}
+
+agegps <- mdata_imp %>%
+  mutate(agegroup_h = case_when(ageyears_h <5 ~ "0-4",
+                                ageyears_h >=5 & ageyears_h <10 ~ "05-09",
+                                ageyears_h >=10 & ageyears_h <15 ~ "10-14",
+                                ageyears_h >=15 & ageyears_h <25 ~ "15-24",
+                                ageyears_h >=25 & ageyears_h <35 ~ "25-34",
+                                ageyears_h >=35 & ageyears_h <45 ~ "35-44",
+                                ageyears_h >=45 & ageyears_h <55 ~ "45-54",
+                                ageyears_h >=55 ~ "55+"),
+                                ordered=TRUE) %>%
+  mutate(tst_5mm = case_when(tstdiam_h<5 ~ 0,
+                             tstdiam_h>=5 ~ 1)) %>%
+  mutate(tst_10mm = case_when(tstdiam_h<10 ~ 0,
+                             tstdiam_h>=10 ~ 1)) %>%
+  mutate(hiv_i = case_when(hiv_i== "a) HIV-negative" ~ "Index HIV -ve",
+                           hiv_i== "b) HIV-positive" ~ "Index HIV +ve")) %>%
+  mutate(hivfinal_h = case_when(hivfinal_h == "a) HIV negative" ~ "Contact HIV -ve",
+                                hivfinal_h == "b) HIV positive" ~ "Contact HIV +ve")) %>%
+  mutate(timespent_h = case_when(timespent_h == "a) every now and again" ~ "Contact rarely",
+                                 timespent_h == "b) part of the day" ~ "Contact part of day",
+                                 timespent_h == "c) most of the day" ~ "Contact most of day")) %>%
+  mutate(sex_i = case_when(sex_i == "Male" ~ "Index male",
+                           sex_i == "Female" ~ "Index female")) %>%
+  mutate(sex_h = case_when(sex_h == "Male" ~ "Contact male",
+                           sex_h == "Female" ~ "Contact female"))
+
+# Make some tables of the outcome variables
+agegps %>% 
+  janitor::tabyl(tst_5mm) %>%
+  gt()
+
+agegps %>% 
+  janitor::tabyl(tst_10mm)%>%
+  gt()
+
+#Now cross tab between agegroup and sex
+agegps %>% 
+  janitor::tabyl(tst_5mm, agegroup_h, site, show_na = FALSE) %>%
+  janitor::adorn_percentages("col") 
+
+agegps %>% 
+  filter(!is.na(tstdiam_h)) %>%
+  janitor::tabyl(tst_10mm, agegroup_h, site, show_na = FALSE) %>%
+  janitor::adorn_percentages("col")
+
+
+
+#write a function to automate these
+gdata <- function(data, groupvar, depvar) {
+  
+data %>%
+  ungroup() %>%
+  select(agegroup_h, {{depvar}}, .data[[groupvar]]) %>%
+  filter(!is.na({{depvar}})) %>%
+  group_by(agegroup_h, .data[[groupvar]], {{depvar}}) %>%
+  summarise(n=n()) %>%
+  mutate(sum = sum(n)) %>%
+  filter({{depvar}}==1) %>%
+  rowwise %>%
+  mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
+  tidyr::unnest(xx) %>%
+  select(agegroup_h, var = .data[[groupvar]], n, sum, estimate, conf.low, conf.high)
+  
+}
+
+#select key variables for exploratory plotting
+plot_vars <- agegps %>%
+  ungroup() %>%
+  select(site, sex_i, sex_h, hiv_i, hivfinal_h, timespent_h) %>%
+  names()
+
+five_mm <- map(plot_vars, ~gdata(data = agegps, groupvar = .x, depvar = tst_5mm)) 
+five_mm <- map(five_mm, ~mutate(., tst=">=5mm"))
+
+ten_mm <- map(plot_vars, ~gdata(data = agegps, groupvar = .x, depvar = tst_10mm))
+ten_mm <- map(ten_mm, ~mutate(., tst=">=10mm"))
+
+gdata_out <- bind_rows(five_mm, ten_mm)
+
+gdata_out <- gdata_out %>%
+  mutate(var = fct_relevel(var,
+                         "Mangaung", "Capricorn", "Index male", "Index female",
+                         "Contact male", "Contact female", 
+                         "Index HIV +ve", "Index HIV -ve",
+                         "Contact HIV +ve", "Contact HIV -ve",
+                         "Contact rarely", "Contact part of day", "Contact most of day"))
+
+
+ggplot(data = gdata_out) +
+  geom_errorbar(aes(x=agegroup_h, ymin=conf.low, ymax = conf.high), width = 0.2) +
+  geom_point(aes(x=agegroup_h, y=estimate, colour=tst)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1),
+                     limits = c(0,0.80),
+                     breaks = c(0,0.15,0.30,0.45,0.60,0.75)) +
+  facet_grid(fct_rev(tst) ~var) +
+  theme_bw(base_family="Oswald") +
+  labs(x="Age group of contact (years)",
+       y="Percentage with tuberculin skin test induration (95% CI)") +
+  theme(legend.position = "none") +
+  theme(axis.text.x=element_text(angle=90, hjust=1))
+```
+
+<br>
+
+Supplemental table 1: Compare characteristics of household contacts who did and did not receive TST.
+
+```{r}
+
+s1 <- tstsa %>%
+  mutate(missing_tst = case_when(is.na(tstdiam_h) ~ "TST not done",
+                                 TRUE ~ "TST done"))
+
+table_s1b <- tableby(missing_tst ~ site + sex_h + ageyears_h + bmi_h + relationship_h + 
+                       employment_h +
+                     airspace_h + timespent_h + sleepsamebed_h + sharebedroom_h +
+                     smoke_h + alcohol_h +
+                     hivfinal_h + art_h + diabetes_h,
+                   data=s1, test = FALSE,
+                   numeric.stats=c("medianq1q3"),cat.stats = c("countrowpct"),  digits=1)
+
+summary(table_s1b)
+
+```
+
+<br>
+
+## 6. Regression modelling
+
+DAG was drawn at dagitty.net, and imported here:
+
+
+Minimal sufficient adjustment sets for estimating the direct effect of Index case HIV status on Latent TB infection: 
+ - Contact HIV status, 
+ - Contact age, 
+ - Contact sex, 
+ - Index case age, 
+ - Index case micro TB status, 
+ - Index case sex, 
+ - Province (site)
+
+
+Fit a data-generating model including priors only to check priors are sensible.
+
+```{r}
+
+prior <- c(
+  prior(normal(0, 2), class = Intercept),
+  prior(normal(0, 2), class = "b"),
+  prior(cauchy(0,1), sd)
+)
+
+#fit model
+prior_fit <- brm(tst_5mm ~
+                   
+                   #Main exposure
+                   hiv_i +
+                   
+                  #Household contact characteristics
+                  hivfinal_h + agegroup_h + sex_h +
+                 
+                  #Index case characteristics
+                  ageyears_i + microconf_i + sex_i +
+                 
+                  #Household characteristics
+                  site +
+              
+                #random intercepts for househod
+              (1 | record_id),
+            data=agegps,
+            family = bernoulli,
+            prior = prior,
+            seed = 13,
+            chains = 1,
+            sample_prior = "only",
+            control=list(adapt_delta=0.99))
+
+plot(prior_fit)
+```
+
+exp(2.5) = OR of 12.18. So these are pretty diffuse priors.
+
+<br>
+
+### TST induration >=5mm
+
+Model 1: estimating the proportion of household contacts with TST induration >=5mm.
+
+```{r}
+#define priors
+prior <- c(
+  prior(normal(0, 2), class = Intercept),
+  prior(normal(0, 2), class = "b"),
+  prior(cauchy(0,1), sd)
+)
+
+#fit model
+fit1 <- brm(tst_5mm ~
+                   
+                   #Main exposure
+                   hiv_i +
+                   
+                  #Household contact characteristics
+                  hivfinal_h + agegroup_h + sex_h +
+                 
+                  #Index case characteristics
+                  ageyears_i + microconf_i + sex_i +
+                 
+                  #Household characteristics
+                  site +
+              
+                #random intercepts for househod
+              (1 | record_id),
+            data=agegps,
+            family = bernoulli,
+            prior = prior,
+            seed = 13,
+            chains = 3,
+            control=list(adapt_delta=0.99))
+
+
+plot(fit1, ask = FALSE)
+stanplot(fit1, pars = "^b_")
+summary(fit1)
+pp_check(fit1)
+
+
+```
+
+
+Hypothesis: do household contacts of HIV-positive index cases have a lower probability of TST positivity?
+
+```{r}
+
+ps <- posterior_samples(fit1, "b_hiv_iIndexHIVPve")
+colMeans(ps < 0)
+
+ps2 <- posterior_samples(fit1, "b_hivfinal_hContactHIVPve")
+colMeans(ps2 < 0)
+
+```
+
+
+
+Look at model output
+
+```{r}
+
+#Look at the posterior odds ratios
+f1_graph_data <- posterior_samples(fit1)
+
+f1_graph_data <- f1_graph_data %>%
+  select(starts_with("b_")) %>%
+  gather(key, value) %>%
+  group_by(key) %>%
+  median_qi(value, .width=0.95) %>%
+  mutate_at(vars(value, .lower, .upper), exp) %>%
+  mutate(model = "tst >=5mm")
+
+f1_graph_data %>% 
+  gt() %>%
+  fmt_number(
+    columns = vars(value, .lower, .upper),
+    decimals = 2,
+    use_seps = FALSE
+  )
+
+# get the fitted estimates
+
+nd <- agegps %>%
+  expand(hiv_i, hivfinal_h, agegroup_h, sex_h ,
+         microconf_i, sex_i, site, 
+         ageyears_i = mean(ageyears_i)
+)
+
+
+fitted_fit1 <- fitted(fit1, re_formula = NA,  newdata = nd)
+
+fitted_graph_data <- cbind(nd, fitted_fit1)
+
+#Graph fitted estimates
+f1_graph_a <- fitted_graph_data %>%
+  filter(sex_h=="Contact male") %>%
+  filter(sex_i=="Index male") %>%
+  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
+                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
+  ggplot() +
+  geom_point(aes(y=Estimate, x=agegroup_h)) +
+  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
+  geom_line(aes(y=Q2.5, x=agegroup_h), group=1, linetype=4) +
+  geom_line(aes(y=Q97.5, x=agegroup_h), group=1, linetype=4) +
+  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family = "Open Sans Condensed Light") +
+  labs(x="",
+       y="",
+       title = paste("A) Percentage (95% credible interval) of household contacts with TST induration", "\u2265","5mm"))
+
+f1_graph_a
+```
+
+Alternative graph
+
+```{r}
+
+
+fitted_fit1_alt <- fitted(fit1, re_formula = NA,  newdata = nd, probs = c(0.025, 0.05, 0.1, 0.25, 0.33, 0.66, 0.75, 0.9, 0.95, 0.975))
+
+fitted_graph_data_alt <- cbind(nd, fitted_fit1_alt)
+
+#Graph fitted estimates
+f1_graph_a_alt <- fitted_graph_data_alt %>%
+  filter(sex_h=="Contact male") %>%
+  filter(sex_i=="Index male") %>%
+  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
+                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
+  ggplot() +
+
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=agegroup_h), group=1, fill="#EDF8E9") +
+  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=agegroup_h), group=1, fill="#BAE4B3") +
+  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=agegroup_h), group=1, fill="#74C476") +
+  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=agegroup_h), group=1, fill="#31A354") +
+  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=agegroup_h), group=1, fill="#006D2C") +
+  geom_point(aes(y=Estimate, x=agegroup_h), shape=4) +
+  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
+  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family = "Open Sans Condensed Light") +
+  labs(x="",
+       y="",
+       title = paste("A) Mean percentage (uncertainty intervals) of household contacts with TST induration", "\u2265","5mm"))
+
+f1_graph_a_alt
+
+
+```
+
+
+<br>
+
+### TST induration >=10mm
+
+```{r}
+#define priors
+prior <- c(
+  prior(normal(0, 2), class = Intercept),
+  prior(normal(0, 2), class = "b"),
+  prior(cauchy(0,1), sd)
+)
+
+#fit model
+fit2 <- brm(tst_10mm ~
+                   
+                   #Main exposure
+                   hiv_i +
+                   
+                  #Household contact characteristics
+                  hivfinal_h + agegroup_h + sex_h +
+                 
+                  #Index case characteristics
+                  ageyears_i + microconf_i + sex_i +
+                 
+                  #Household characteristics
+                  site +
+              
+                #random intercepts for househod
+              (1 | record_id),
+            data=agegps,
+            family = bernoulli,
+            prior = prior,
+            seed = 13,
+            chains = 3,
+            control=list(adapt_delta=0.99))
+
+
+plot(fit2, ask = FALSE)
+stanplot(fit2, pars = "^b_")
+summary(fit2)
+pp_check(fit2)
+```
+
+Model output
+
+```{r}
+
+#Look at the posterior odds ratios
+f2_graph_data <- posterior_samples(fit2)
+
+f2_graph_data <- f2_graph_data %>%
+  select(starts_with("b_")) %>%
+  gather(key, value) %>%
+  group_by(key) %>%
+  median_qi(value, .width=0.95) %>%
+  mutate_at(vars(value, .lower, .upper), exp) %>%
+  mutate(model = "tst >=10mm")
+
+f2_graph_data %>% 
+  gt() %>%
+  fmt_number(
+    columns = vars(value, .lower, .upper),
+    decimals = 2,
+    use_seps = FALSE
+  )
+
+# get the fitted estimates
+
+nd <- agegps %>%
+  expand(hiv_i, hivfinal_h, agegroup_h, sex_h ,
+         microconf_i, sex_i, site, 
+         ageyears_i = mean(ageyears_i)
+)
+
+
+fitted_fit2 <- fitted(fit2, re_formula = NA,  newdata = nd)
+
+fitted_graph_data2 <- cbind(nd, fitted_fit2)
+
+
+#Graph fitted estimates
+f2_graph_a <- fitted_graph_data2 %>%
+  filter(sex_h=="Contact male") %>%
+  filter(sex_i=="Index male") %>%
+  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
+                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
+  ggplot() +
+  geom_point(aes(y=Estimate, x=agegroup_h)) +
+  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
+  geom_line(aes(y=Q2.5, x=agegroup_h), group=1, linetype=4) +
+  geom_line(aes(y=Q97.5, x=agegroup_h), group=1, linetype=4) +
+  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family = "Open Sans Condensed Light") +
+  labs(x="",
+       y="",
+       title = paste("B) Percentage (95% credible interval) of household contacts with TST induration", "\u2265","10mm"))
+
+f2_graph_a
+
+
+f1_graph_a / f2_graph_a
+ggsave(here("figures/figure_1.pdf"), width = 12, height = 12, dpi=1200, device = cairo_pdf)
+
+```
+
+Hypothesis: do household contacts of HIV-positive index cases have a lower probability of TST positivity?
+
+```{r}
+
+ps <- posterior_samples(fit2, "b_hiv_iIndexHIVPve")
+colMeans(ps < 0)
+
+ps2 <- posterior_samples(fit2, "b_hivfinal_hContactHIVPve")
+colMeans(ps2 < 0)
+
+```
+
+
+```{r}
+
+
+fitted_fit2_alt <- fitted(fit2, re_formula = NA,  newdata = nd, probs = c(0.025, 0.05, 0.1, 0.25, 0.33, 0.66, 0.75, 0.9, 0.95, 0.975))
+
+fitted_graph_data_alt2 <- cbind(nd, fitted_fit2_alt)
+
+#Graph fitted estimates
+f2_graph_a_alt2 <- fitted_graph_data_alt2 %>%
+  filter(sex_h=="Contact male") %>%
+  filter(sex_i=="Index male") %>%
+  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
+                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
+  ggplot() +
+
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=agegroup_h), group=1, fill="#EFF3FF") +
+  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=agegroup_h), group=1, fill="#BDD7E7") +
+  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=agegroup_h), group=1, fill="#6BAED6") +
+  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=agegroup_h), group=1, fill="#3182BD") +
+  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=agegroup_h), group=1, fill="#08519C") +
+  geom_point(aes(y=Estimate, x=agegroup_h), shape=4) +
+  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
+  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw(base_family = "Open Sans Condensed Light") +
+  labs(x="Age group (years) of household contact",
+       y="",
+       title = paste("B) Mean percentage (uncertainty intervals) of household contacts with TST induration", "\u2265","10mm"))
+
+f2_graph_a_alt2
+
+f1_graph_a_alt / f2_graph_a_alt2
+ggsave(here("figures/figure_1_alt.png"), width = 12, height = 12, dpi=1200)
+
+
+```
+
+
+
+<br>
+
+## 6. Reproducibility
+
+This reproduction of the analysis was run by: 
+
+```{r sysinfo, echo=FALSE, message=FALSE, comment=NA, warning=FALSE}
+
+sysinfo <- Sys.info()
+
+sysinfo <- data.frame(keyName=names(sysinfo), value=sysinfo, row.names=NULL)
+
+sysinfo %>% kable()
+```
+
+Analysis was run at **`r Sys.time()`**, and using the following Session Info:
+
+```{r sessioninfo, echo=FALSE, results='markdown', message=FALSE, comment=NA, warning=FALSE}
+sessionInfo()
+```

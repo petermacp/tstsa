@@ -11,6 +11,9 @@ This package provides data and code for the reproducible analysis of
 tuberculin skin test positivity among participants in the HomeACF Trial
 in South Africa.
 
+This documents reports revised analysis following reviewer’s comments
+received on 17th December 2019.
+
 ## Installation
 
 You can install the released version of tstsa from
@@ -19,7 +22,3 @@ You can install the released version of tstsa from
 ``` r
 remotes::install_github("petermacp/tstsa")
 ```
-
-## Example
-
-Here is how the package is structured.
