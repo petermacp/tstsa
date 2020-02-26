@@ -1,6 +1,6 @@
 Package: tstsa
 Title: Reproducable analysis of TST prevalence in HomeACF Study
-Version: 0.0.0.9000
+Version: 0.1.0.000
 Authors@R: 
     person(given = "Peter",
            family = "MacPherson",

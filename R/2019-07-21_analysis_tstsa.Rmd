@@ -27,7 +27,7 @@ output:
 
 This is a statistical analysis of the prevalence of TST reactivity among household contacts of index TB cases in the HomeACF Study, a cluster randomised trial done in two provinces of South Africa.
 
-This documents reports revised analysis following reviewer's comments received on 17th December 2019.
+This documents reports revised analysis following reviewer's comments received on 25th Februrary 2020.
 
 <br>
 
@@ -426,6 +426,34 @@ ggplot(data = gdata_out) +
   theme(axis.text.x=element_text(angle=90, hjust=1))
 ```
 
+A graph of TST positivity by age of household contact
+
+```{r}
+
+gdata_out2 <- gdata_out %>%
+  filter(var %in% c("Capricorn", "Mangaung")) %>%
+  mutate(var = factor(var, levels=c("Capricorn", "Mangaung"), labels=c("Capricorn", "Mangaung")),
+         tst = factor(tst, levels=c(">=5mm", ">=10mm"), labels=c(">=5mm", ">=10mm")))
+
+gdata_out2 %>%
+  ggplot() +
+  geom_line(aes(y=estimate, x=agegroup_h, group=1)) +
+  geom_point(aes(y=estimate, x=agegroup_h, group=1)) +
+  geom_line(aes(y=conf.low, x=agegroup_h), group=1, linetype=4) +
+  geom_line(aes(y=conf.high, x=agegroup_h), group=1, linetype=4) +
+  facet_grid(tst~ var) +
+  theme_bw(base_family = "Open Sans Condensed Light") +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(x="Age group of household contact (years)",
+       y="Percentage with TST induration (95% confidence interval)")
+
+ggsave(here("figures/figure_1.png"), width = 10, height = 10, dpi=1200)
+
+```
+
+
+
+
 <br>
 
 Supplemental table 1: Compare characteristics of household contacts who did and did not receive TST.
@@ -452,16 +480,11 @@ summary(table_s1b)
 
 ## 6. Regression modelling
 
-DAG was drawn at dagitty.net, and imported here:
+DAG was drawn at dagitty.net
 
 
 Minimal sufficient adjustment sets for estimating the direct effect of Index case HIV status on Latent TB infection: 
- - Contact HIV status, 
- - Contact age, 
- - Contact sex, 
  - Index case age, 
- - Index case micro TB status, 
- - Index case sex, 
  - Province (site)
 
 
@@ -480,12 +503,9 @@ prior_fit <- brm(tst_5mm ~
                    
                    #Main exposure
                    hiv_i +
-                   
-                  #Household contact characteristics
-                  hivfinal_h + agegroup_h + sex_h +
                  
                   #Index case characteristics
-                  ageyears_i + microconf_i + sex_i +
+                  ageyears_i +
                  
                   #Household characteristics
                   site +
@@ -501,9 +521,25 @@ prior_fit <- brm(tst_5mm ~
             control=list(adapt_delta=0.99))
 
 plot(prior_fit)
+summary(prior_fit)
 ```
 
-exp(2.5) = OR of 12.18. So these are pretty diffuse priors.
+
+```{r}
+
+prior_fe <- fixef(prior_fit, summary = TRUE, robust = FALSE, probs = c(0.025, 0.975)) %>%
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  filter(rowname != "Intercept") %>%
+  select(rowname, Q2.5, Q97.5) %>%
+  mutate_at(vars(Q2.5, Q97.5), exp)
+
+prior_fe %>%
+  gt()
+
+```
+
+So these are pretty diffuse priors.
 
 <br>
 
@@ -524,12 +560,9 @@ fit1 <- brm(tst_5mm ~
                    
                    #Main exposure
                    hiv_i +
-                   
-                  #Household contact characteristics
-                  hivfinal_h + agegroup_h + sex_h +
                  
                   #Index case characteristics
-                  ageyears_i + microconf_i + sex_i +
+                  ageyears_i +
                  
                   #Household characteristics
                   site +
@@ -559,9 +592,6 @@ Hypothesis: do household contacts of HIV-positive index cases have a lower proba
 
 ps <- posterior_samples(fit1, "b_hiv_iIndexHIVPve")
 colMeans(ps < 0)
-
-ps2 <- posterior_samples(fit1, "b_hivfinal_hContactHIVPve")
-colMeans(ps2 < 0)
 
 ```
 
@@ -593,9 +623,8 @@ f1_graph_data %>%
 # get the fitted estimates
 
 nd <- agegps %>%
-  expand(hiv_i, hivfinal_h, agegroup_h, sex_h ,
-         microconf_i, sex_i, site, 
-         ageyears_i = mean(ageyears_i)
+  expand(hiv_i, site, 
+         ageyears_i = modelr::seq_range(ageyears_i, n=100)
 )
 
 
@@ -605,16 +634,11 @@ fitted_graph_data <- cbind(nd, fitted_fit1)
 
 #Graph fitted estimates
 f1_graph_a <- fitted_graph_data %>%
-  filter(sex_h=="Contact male") %>%
-  filter(sex_i=="Index male") %>%
-  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
-                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
   ggplot() +
-  geom_point(aes(y=Estimate, x=agegroup_h)) +
-  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
-  geom_line(aes(y=Q2.5, x=agegroup_h), group=1, linetype=4) +
-  geom_line(aes(y=Q97.5, x=agegroup_h), group=1, linetype=4) +
-  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  geom_line(aes(y=Estimate, x=ageyears_i, group=1)) +
+  geom_line(aes(y=Q2.5, x=ageyears_i), group=1, linetype=4) +
+  geom_line(aes(y=Q97.5, x=ageyears_i), group=1, linetype=4) +
+  facet_grid(hiv_i~ site) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   theme_bw(base_family = "Open Sans Condensed Light") +
   labs(x="",
@@ -635,20 +659,14 @@ fitted_graph_data_alt <- cbind(nd, fitted_fit1_alt)
 
 #Graph fitted estimates
 f1_graph_a_alt <- fitted_graph_data_alt %>%
-  filter(sex_h=="Contact male") %>%
-  filter(sex_i=="Index male") %>%
-  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
-                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
   ggplot() +
-
-  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=agegroup_h), group=1, fill="#EDF8E9") +
-  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=agegroup_h), group=1, fill="#BAE4B3") +
-  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=agegroup_h), group=1, fill="#74C476") +
-  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=agegroup_h), group=1, fill="#31A354") +
-  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=agegroup_h), group=1, fill="#006D2C") +
-  geom_point(aes(y=Estimate, x=agegroup_h), shape=4) +
-  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
-  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=ageyears_i), group=1, fill="#EDF8E9") +
+  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=ageyears_i), group=1, fill="#BAE4B3") +
+  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=ageyears_i), group=1, fill="#74C476") +
+  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=ageyears_i), group=1, fill="#31A354") +
+  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=ageyears_i), group=1, fill="#006D2C") +
+  geom_line(aes(y=Estimate, x=ageyears_i, group=1)) +
+  facet_grid(hiv_i~ site) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   theme_bw(base_family = "Open Sans Condensed Light") +
   labs(x="",
@@ -678,12 +696,9 @@ fit2 <- brm(tst_10mm ~
                    
                    #Main exposure
                    hiv_i +
-                   
-                  #Household contact characteristics
-                  hivfinal_h + agegroup_h + sex_h +
-                 
+
                   #Index case characteristics
-                  ageyears_i + microconf_i + sex_i +
+                  ageyears_i +
                  
                   #Household characteristics
                   site +
@@ -730,9 +745,8 @@ f2_graph_data %>%
 # get the fitted estimates
 
 nd <- agegps %>%
-  expand(hiv_i, hivfinal_h, agegroup_h, sex_h ,
-         microconf_i, sex_i, site, 
-         ageyears_i = mean(ageyears_i)
+  expand(hiv_i, site, 
+         ageyears_i = modelr::seq_range(ageyears_i, n=100)
 )
 
 
@@ -743,19 +757,14 @@ fitted_graph_data2 <- cbind(nd, fitted_fit2)
 
 #Graph fitted estimates
 f2_graph_a <- fitted_graph_data2 %>%
-  filter(sex_h=="Contact male") %>%
-  filter(sex_i=="Index male") %>%
-  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
-                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
   ggplot() +
-  geom_point(aes(y=Estimate, x=agegroup_h)) +
-  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
-  geom_line(aes(y=Q2.5, x=agegroup_h), group=1, linetype=4) +
-  geom_line(aes(y=Q97.5, x=agegroup_h), group=1, linetype=4) +
-  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  geom_line(aes(y=Estimate, x=ageyears_i, group=1)) +
+  geom_line(aes(y=Q2.5, x=ageyears_i), group=1, linetype=4) +
+  geom_line(aes(y=Q97.5, x=ageyears_i), group=1, linetype=4) +
+  facet_grid(hiv_i~ site) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   theme_bw(base_family = "Open Sans Condensed Light") +
-  labs(x="",
+  labs(x="Index case age (years)",
        y="",
        title = paste("B) Percentage (95% credible interval) of household contacts with TST induration", "\u2265","10mm"))
 
@@ -763,7 +772,7 @@ f2_graph_a
 
 
 f1_graph_a / f2_graph_a
-ggsave(here("figures/figure_1.pdf"), width = 12, height = 12, dpi=1200, device = cairo_pdf)
+ggsave(here("figures/figure_2.png"), width = 10, height = 10, dpi=1200)
 
 ```
 
@@ -773,10 +782,6 @@ Hypothesis: do household contacts of HIV-positive index cases have a lower proba
 
 ps <- posterior_samples(fit2, "b_hiv_iIndexHIVPve")
 colMeans(ps < 0)
-
-ps2 <- posterior_samples(fit2, "b_hivfinal_hContactHIVPve")
-colMeans(ps2 < 0)
-
 ```
 
 
@@ -789,30 +794,24 @@ fitted_graph_data_alt2 <- cbind(nd, fitted_fit2_alt)
 
 #Graph fitted estimates
 f2_graph_a_alt2 <- fitted_graph_data_alt2 %>%
-  filter(sex_h=="Contact male") %>%
-  filter(sex_i=="Index male") %>%
-  mutate(microconf_i = case_when(microconf_i=="a) Not micro-confirmed TB" ~ "Not micro. +ve TB",
-                                 microconf_i=="b) Micro-confirmed TB" ~ "Micro. +ve TB")) %>%
   ggplot() +
-
-  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=agegroup_h), group=1, fill="#EFF3FF") +
-  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=agegroup_h), group=1, fill="#BDD7E7") +
-  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=agegroup_h), group=1, fill="#6BAED6") +
-  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=agegroup_h), group=1, fill="#3182BD") +
-  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=agegroup_h), group=1, fill="#08519C") +
-  geom_point(aes(y=Estimate, x=agegroup_h), shape=4) +
-  geom_line(aes(y=Estimate, x=agegroup_h, group=1)) +
-  facet_grid(hivfinal_h + microconf_i ~ site + hiv_i) +
+  geom_ribbon(aes(ymin=Q2.5, ymax=Q97.5, x=ageyears_i), group=1, fill="#EFF3FF") +
+  geom_ribbon(aes(ymin=Q5, ymax=Q95, x=ageyears_i), group=1, fill="#BDD7E7") +
+  geom_ribbon(aes(ymin=Q10, ymax=Q90, x=ageyears_i), group=1, fill="#6BAED6") +
+  geom_ribbon(aes(ymin=Q25, ymax=Q75, x=ageyears_i), group=1, fill="#3182BD") +
+  geom_ribbon(aes(ymin=Q33, ymax=Q66, x=ageyears_i), group=1, fill="#08519C") +
+  geom_line(aes(y=Estimate, x=ageyears_i, group=1)) +
+  facet_grid(hiv_i~ site) +
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   theme_bw(base_family = "Open Sans Condensed Light") +
-  labs(x="Age group (years) of household contact",
+  labs(x="Index case age (years)",
        y="",
        title = paste("B) Mean percentage (uncertainty intervals) of household contacts with TST induration", "\u2265","10mm"))
 
 f2_graph_a_alt2
 
 f1_graph_a_alt / f2_graph_a_alt2
-ggsave(here("figures/figure_1_alt.png"), width = 12, height = 12, dpi=1200)
+ggsave(here("figures/figure_2_alt.png"), width = 10, height = 10, dpi=1200)
 
 
 ```
