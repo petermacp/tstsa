@@ -35,7 +35,7 @@ This documents reports revised analysis following reviewer's comments received o
 
 Load all required packages for analysis.
 
-```{r setup, echo=FALSE, include=FALSE, message=FALSE, comment=NA, warning=FALSE}
+```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)    #for data manipulation
 library(pmthemes)     #for ggplot themes
 library(knitr)        #for tables
@@ -48,6 +48,7 @@ library(janitor)      #for cleaning
 library(cowplot)      #for combining graphs
 library(patchwork)    #for combining graphs
 library(here)         #for file system organisation
+library(glue)         #for string manipulation
 
 ```
 
@@ -90,9 +91,9 @@ imp1
 
 mdata_imp <- as.data.frame(impute.transcan(imp1, imputation=1, data=mdata, list.out=TRUE, pr=FALSE, check=FALSE))
 
-mdata_imp %>% janitor::tabyl(hiv_i)
-mdata_imp %>% janitor::tabyl(hivfinal_h)
-mdata_imp %>% janitor::tabyl(timespent_h)
+mdata_imp %>% janitor::tabyl(hiv_i) %>% gt()
+mdata_imp %>% janitor::tabyl(hivfinal_h) %>% gt()
+mdata_imp %>% janitor::tabyl(timespent_h) %>% gt()
 
 mdata_imp <- mdata %>%
   dplyr::select(record_id, contact_id, tstdiam_h,smoke_h) %>%
@@ -121,8 +122,7 @@ Make a table of baseline characteristics by study site.
 
 First individual-level characteristics.
 
-```{r}
-glimpse(tstsa)
+```{r, results='asis'}
 
 table1a <- tableby(site ~ sex_i + ageyears_i + bmi_i +
                      dead_i + xpert_i + smear_i + culture_i +
@@ -137,7 +137,7 @@ summary(table1a)
 
 Now the household contact characteristics
 
-```{r}
+```{r, results='asis'}
 
 table1b <- tableby(site ~ sex_h + ageyears_h +
                      airspace_h + timespent_h + sleepsamebed_h + sharebedroom_h +
@@ -154,9 +154,7 @@ summary(table1b)
 
 Now the dwelling characteristics
 
-```{r}
-
-glimpse(tstsa)
+```{r, results='asis'}
 
 dwellings <- tstsa %>%
   select(record_id, site, num_contacts, totalrooms_h, windows_h,
@@ -221,7 +219,8 @@ janitor::tabyl(agegroup_h, site) %>%
   adorn_totals("col") %>%
   adorn_percentages("col") %>%
   adorn_pct_formatting() %>%
-  adorn_ns()
+  adorn_ns() %>%
+  gt()
   
   
 
@@ -240,7 +239,7 @@ agegps %>%
 
 Look at the bins of TST diameter
 
-```{r}
+```{r, warning=FALSE}
 
 tstsa %>%
   group_by(tstdiam_h, site) %>%
@@ -275,7 +274,7 @@ g0 <- agegps %>%
   mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
   tidyr::unnest(xx)
 
-g0 
+g0 %>% gt()
 
 #plot
 g0 %>%
@@ -299,20 +298,7 @@ g0_b <- agegps %>%
   mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
   tidyr::unnest(xx)
 
-g0_b
-
-#plot the proportion with TST induration >=5mm by site
-g0_b %>%
-  ggplot() +
-  geom_bar(aes(x=agegroup_h, y=estimate, fill = site), stat = "identity") +
-  geom_errorbar(aes(x=agegroup_h, ymin=conf.low, ymax = conf.high), width = 0.2) +
-  facet_wrap(site~.) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
-  theme_bw(base_family="Oswald") +
-  labs(y="",
-       x="") +
-  theme(legend.position = "none") + 
-  theme(axis.text.x=element_text(angle=45, hjust=1))
+g0_b %>% gt()
 
 
 ```
@@ -367,7 +353,7 @@ agegps %>%
 agegps %>% 
   filter(!is.na(tstdiam_h)) %>%
   janitor::tabyl(tst_10mm, agegroup_h, site, show_na = FALSE) %>%
-  janitor::adorn_percentages("col")
+  janitor::adorn_percentages("col") 
 
 
 
@@ -426,6 +412,60 @@ ggplot(data = gdata_out) +
   theme(axis.text.x=element_text(angle=90, hjust=1))
 ```
 
+Put this into tabular form
+
+```{r}
+
+#write a function to automate these
+tdata <- function(data, groupvar, depvar) {
+  
+data %>%
+  ungroup() %>%
+  select(site, {{depvar}}, .data[[groupvar]]) %>%
+  filter(!is.na({{depvar}})) %>%
+  group_by(site, .data[[groupvar]], {{depvar}}) %>%
+  summarise(n=n()) %>%
+  mutate(sum = sum(n)) %>%
+  filter({{depvar}}==1) %>%
+  rowwise %>%
+  mutate(xx = list(broom::tidy(binom.test(n, sum, conf.level=0.95)))) %>%
+  tidyr::unnest(xx) %>%
+  select(site, var = .data[[groupvar]], n, sum, estimate, conf.low, conf.high)
+  
+}
+
+tab_vars <- agegps %>%
+  ungroup() %>%
+  select(sex_i, hiv_i, microconf_i, sex_h, hivfinal_h, timespent_h, sharebedroom_h, smoke_h) %>%
+  names()
+
+five_mm2 <- map(tab_vars, ~tdata(data = agegps, groupvar = .x, depvar = tst_5mm)) 
+five_mm2 <- map(five_mm2, ~mutate(., tst=">=5mm"))
+
+ten_mm2 <- map(tab_vars, ~tdata(data = agegps, groupvar = .x, depvar = tst_10mm))
+ten_mm2 <- map(ten_mm2, ~mutate(., tst=">=10mm"))
+
+tdata_out <- bind_rows(five_mm2, ten_mm2)
+
+tdata_out %>%
+  pivot_wider(names_from = site,
+              values_from = c(n, sum, estimate, conf.low, conf.high)) %>%
+  mutate(var = case_when(var =="No" ~ "Shares bedroom",
+                         var =="Yes" ~ "Doesn't share bedroom",
+                         TRUE ~ var)) %>%
+  mutate_at(vars(estimate_Capricorn:conf.high_Mangaung), scales::label_percent(accuracy = 0.1, trim=FALSE)) %>%
+  mutate(n_capricorn = glue("{n_Capricorn}/{sum_Capricorn} ({estimate_Capricorn}, {conf.low_Capricorn}-{conf.high_Capricorn})")) %>%
+  mutate(n_mangaung = glue("{n_Mangaung}/{sum_Mangaung} ({estimate_Mangaung}, {conf.low_Mangaung}-{conf.high_Mangaung})")) %>%
+  select(var, tst, n_capricorn, n_mangaung) %>%
+  gt()
+
+
+
+```
+
+
+
+
 A graph of TST positivity by age of household contact
 
 ```{r}
@@ -458,7 +498,7 @@ ggsave(here("figures/figure_1.png"), width = 10, height = 10, dpi=1200)
 
 Supplemental table 1: Compare characteristics of household contacts who did and did not receive TST.
 
-```{r}
+```{r, results='asis'}
 
 s1 <- tstsa %>%
   mutate(missing_tst = case_when(is.na(tstdiam_h) ~ "TST not done",
