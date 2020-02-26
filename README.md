@@ -12,7 +12,7 @@ tuberculin skin test positivity among participants in the HomeACF Trial
 in South Africa.
 
 This documents reports revised analysis following reviewer’s comments
-received on 17th December 2019.
+received on 25th Feb 2020.
 
 ## Installation
 
